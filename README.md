@@ -22,6 +22,7 @@ reward-design lessons that made it work
 ## Quickstart
 
 Requires a CUDA GPU (training runs through MuJoCo Warp) and [uv](https://docs.astral.sh/uv/).
+Step-by-step guide incl. WSL2 setup: [docs/hd1910_training_quickstart.md](docs/hd1910_training_quickstart.md).
 
 > **On ARM boxes (DGX Spark / GB10, Jetson):** `uv sync` pulls ~2 GB of CUDA
 > wheels on first run and uv's default 30 s HTTP timeout can abort mid-download.
