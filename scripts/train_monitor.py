@@ -173,6 +173,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # silence per-request noise
         pass
 
+    def handle_one_request(self):
+        # Browsers abort in-flight chart requests on every auto-refresh; the
+        # default HTTP server prints a full traceback for each dropped
+        # connection. Swallow connection-level errors — they're cosmetic.
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            try:
+                self.close_connection = True
+            except Exception:
+                pass
+
     def _send(self, body: bytes, ctype: str):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
