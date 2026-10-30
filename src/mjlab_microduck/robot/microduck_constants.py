@@ -1,8 +1,10 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import mujoco
-from mjlab.actuator import XmlActuatorCfg
+from mjlab.actuator import DcMotorActuatorCfg, XmlActuatorCfg
+from mjlab.actuator.dc_actuator import DcMotorActuator
 from mjlab_microduck.actuator import (
     BacklashEncoderBamActuatorCfg,
     FrictionDRBamActuatorCfg,
@@ -173,7 +175,81 @@ _BAM_ACTUATOR_KWARGS = dict(
     delay_min_lag=3,
     delay_max_lag=6,
 )
-actuators = FrictionDRBamActuatorCfg(**_BAM_ACTUATOR_KWARGS)
+
+# -- MG90S hobby servo (DC motor model: stall torque + no-load speed + PD) --
+# Set USE_MG90S = False to go back to Pollen's measured XL330 (BAM) model.
+# Values are datasheet starting guesses at 6 V; replace them with numbers
+# measured on the pendulum rig once the servos arrive.
+USE_MG90S = True
+
+
+class MG90SActuator(DcMotorActuator):
+    """mjlab's DC-motor servo model, reusing the robot XML's actuators.
+
+    The robot XML already defines a <position> actuator on every servo joint.
+    mjlab's stock DcMotorActuator adds a second actuator with the same name,
+    which MuJoCo rejects. This converts the existing XML actuators into torque
+    motors in place (the same thing Pollen's BAM actuator does) and lets the
+    DC-motor model compute the torque each step.
+    """
+
+    def edit_spec(self, spec: mujoco.MjSpec, target_names: list[str]) -> None:
+        cfg = self.cfg
+        by_target = {}
+        for act in spec.actuators:
+            tgt = act.target if isinstance(act.target, str) else getattr(act.target, "name", None)
+            by_target[tgt] = act
+
+        missing = []
+        for name in target_names:
+            act = by_target.get(name)
+            if act is None:
+                missing.append(name)
+                continue
+            act.set_to_motor()
+            act.gear = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            act.forcelimited = True
+            act.forcerange = [-cfg.effort_limit, cfg.effort_limit]
+            act.ctrllimited = True
+            act.ctrlrange = [-cfg.effort_limit, cfg.effort_limit]
+            joint = spec.joint(name)
+            if cfg.armature is not None:
+                joint.armature = cfg.armature
+            if cfg.frictionloss is not None:
+                joint.frictionloss = cfg.frictionloss
+            if cfg.viscous_damping is not None:
+                joint.damping[0] = cfg.viscous_damping
+            self._mjs_actuators.append(act)
+
+        # Joints with no XML actuator get a fresh one (stock mjlab behaviour).
+        if missing:
+            super().edit_spec(spec, missing)
+
+
+@dataclass(kw_only=True)
+class MG90SActuatorCfg(DcMotorActuatorCfg):
+    def build(self, entity, target_ids, target_names) -> MG90SActuator:
+        return MG90SActuator(self, entity, target_ids, target_names)
+
+
+MG90S_ACTUATOR = MG90SActuatorCfg(
+    target_names_expr=(r"^(?!passive_).*",),
+    stiffness=2.0,  # P gain, N·m/rad (guess: full torque at ~6° error)
+    damping=0.05,  # D gain, N·m·s/rad (guess)
+    saturation_effort=0.22,  # stall torque: 2.2 kg·cm = 0.22 N·m at 6 V
+    effort_limit=0.22,  # same as stall: servo is allowed short bursts
+    velocity_limit=13.0,  # no-load speed: 0.08 s/60° ≈ 13 rad/s at 6 V
+    viscous_damping=0.0,  # speed limit above already models the motor
+    frictionloss=0.01,  # gear friction, N·m (guess)
+    # armature left at the XML value (XL330's 0.0018) until measured
+    delay_min_lag=2,  # physics steps (~5 ms each): PCA9685 PWM + servo lag
+    delay_max_lag=6,
+)
+
+if USE_MG90S:
+    actuators = MG90S_ACTUATOR
+else:
+    actuators = FrictionDRBamActuatorCfg(**_BAM_ACTUATOR_KWARGS)
 
 # Same BAM actuator, but the firmware position loop reads the encoder THROUGH
 # the passive_<joint>_backlash hinges (the real encoder is on the output side
