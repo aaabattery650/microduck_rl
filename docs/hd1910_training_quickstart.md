@@ -37,14 +37,37 @@ and raise while `nvidia-smi` shows headroom.
 A 5-iteration / 64-env run catches ~95 % of config errors for cents:
 
 ```bash
-uv run train Mjlab-Velocity-Flat-MicroDuck --env.scene.num-envs 64 --agent.max_iterations 5
+uv run train Mjlab-Stand-Flat-MicroDuck --env.scene.num-envs 64 --agent.max_iterations 5
 ```
 
 Expected: it builds the env (actor 61-D / critic 76-D), runs 5 iterations,
 saves `model_0..4.pt`, all reward terms print, no NaNs. The robot falls over
 constantly at this stage — that is expected and fine.
 
-## 3. Real training
+## 2b. First real policy: balance (`Mjlab-Stand-Flat-MicroDuck`)
+
+The simplest policy in the family — **stay standing** at (near-)zero command
+under initial tilt, pushes and head motion. Best first run: fast, dead-simple
+success criterion, and it validates the whole HD-1910 pipeline end to end
+before you invest in gaits.
+
+```bash
+uv run train Mjlab-Stand-Flat-MicroDuck --env.scene.num-envs 4096
+```
+
+Budget **500–1500 iterations** (~15–60 min on a modern GPU). Healthy run:
+`Mean episode length` climbing toward the timeout fast, `fell_over` → 0,
+`upright`/`stand_height`/`pose` all growing. Gait rewards are absent by
+design — nothing pays for stepping. The exported ONNX drops into the
+runtime's `stand` slot (`uv run publish ... --slot stand`).
+
+Then view it:
+
+```bash
+uv run play Mjlab-Stand-Flat-MicroDuck --checkpoint-file logs/rsl_rl/stand/<ts>/model_1000.pt
+```
+
+## 3. Real training (walking)
 
 ```bash
 wandb login                     # or: export WANDB_MODE=offline
@@ -94,7 +117,8 @@ shared 61-D observation contract). Start with the walking task:
 
 | Task id | Policy learns | Budget (iters @4096) |
 |---|---|---|
-| `Mjlab-Velocity-Flat-MicroDuck` | **Start here.** Walking gaits: track commanded forward/side speed + turn (incl. spin-in-place), head-pose commands, upright idle at zero command | 4–6 k |
+| `Mjlab-Stand-Flat-MicroDuck` | **Start here.** Balance: hold the stand at zero command under tilt spawns, pushes and head motion | **0.5–1.5 k** |
+| `Mjlab-Velocity-Flat-MicroDuck` | Walking gaits: track commanded forward/side speed + turn (incl. spin-in-place), head-pose commands, upright idle at zero command | 4–6 k |
 | `Mjlab-Velocity-Rough-MicroDuck` | Same, on rough terrain | 4–6 k |
 | `Mjlab-VelStand-{Flat,Rough}-MicroDuck` | Walking + fall recovery in one policy | 4–6 k |
 | `Mjlab-StandUp-{Flat,Rough}-MicroDuck` | Stand up from face-down/face-up/sitting, then hold + body-pose control | ~1 k |

@@ -30,6 +30,10 @@ from .microduck_velocity_env_cfg import (
     make_microduck_velocity_env_cfg,
     MicroduckRlCfg,
 )
+from .microduck_stand_env_cfg import (
+    make_microduck_stand_env_cfg,
+    MicroduckStandRlCfg,
+)
 from .microduck_standup_env_cfg import (
     make_microduck_standup_env_cfg,
     MicroduckStandUpRlCfg,
@@ -86,6 +90,16 @@ register_mjlab_task(
     env_cfg=make_microduck_velocity_env_cfg(),
     play_env_cfg=make_microduck_velocity_env_cfg(play=True),
     rl_cfg=MicroduckRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Stand/balance — the simplest policy: hold the stand at (near-)zero command
+# under tilt spawns, pushes and head motion. Runs before the gait tasks.
+register_mjlab_task(
+    task_id="Mjlab-Stand-Flat-MicroDuck",
+    env_cfg=make_microduck_stand_env_cfg(),
+    play_env_cfg=make_microduck_stand_env_cfg(play=True),
+    rl_cfg=MicroduckStandRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
