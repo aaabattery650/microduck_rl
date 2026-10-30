@@ -191,7 +191,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(b"no checkpoint yet - train a little longer", "text/plain")
                 return
             subprocess.Popen(
-                ["uv", "run", "play", TASK, "--checkpoint-file", str(ckpt), "--num-envs", "1"],
+                [
+                    "uv", "run", "play", TASK,
+                    "--checkpoint-file", str(ckpt),
+                    "--num-envs", "1",
+                    # Browser-based viewer: WSL's translated OpenGL is often
+                    # software-rendered (~4 fps); viser renders in the browser.
+                    "--viewer", "viser",
+                ],
                 cwd=str(REPO_ROOT),
             )
             self._send(f"opening viewer on {ckpt.name} ...".encode(), "text/plain")
