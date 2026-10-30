@@ -30,6 +30,7 @@ import glob
 import io
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -190,21 +191,50 @@ class Handler(BaseHTTPRequestHandler):
             if ckpt is None:
                 self._send(b"no checkpoint yet - train a little longer", "text/plain")
                 return
+            # CPU device + output to a log file: avoids VRAM contention with
+            # the running training (the usual viewer-crash cause) and keeps
+            # this server's terminal clean. Find the URL inside the log.
+            logf = open("/tmp/play_viewer.log", "w")
             subprocess.Popen(
                 [
                     "uv", "run", "play", TASK,
                     "--checkpoint-file", str(ckpt),
                     "--num-envs", "1",
-                    # Browser-based viewer: WSL's translated OpenGL is often
-                    # software-rendered (~4 fps); viser renders in the browser.
                     "--viewer", "viser",
+                    "--device", "cpu",
                 ],
                 cwd=str(REPO_ROOT),
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
-            self._send(f"opening viewer on {ckpt.name} ...".encode(), "text/plain")
+            self._send(
+                f"viewer starting on {ckpt.name} (takes ~1 min). "
+                "URL + any errors: /tmp/play_viewer.log — run  tail -f /tmp/play_viewer.log".encode(),
+                "text/plain",
+            )
         else:
             body = PAGE.format(status=LAST_MESSAGE, log=LOG_PATH, task=TASK).encode()
             self._send(body, "text/html")
+
+
+def open_in_browser(url: str) -> None:
+    """Open the URL — on WSL, via the WINDOWS browser (cmd.exe /c start);
+    Python's webbrowser alone often can't launch one from WSL."""
+    try:
+        if shutil.which("cmd.exe"):
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+    except OSError:
+        pass
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass  # the URL is printed; the user can open it by hand
 
 
 def main() -> int:
@@ -227,7 +257,7 @@ def main() -> int:
     url = f"http://localhost:{args.port}"
     print(f"[train_monitor] {url}   (watching {LOG_PATH}; Ctrl+C to stop)")
     if not args.no_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.5, lambda: open_in_browser(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
