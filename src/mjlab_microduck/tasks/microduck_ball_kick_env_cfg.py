@@ -546,6 +546,9 @@ def make_microduck_ball_kick_env_cfg(
             },
         )
 
+    # HD-1910 (DC-servo) friction + bus-voltage DR — registers nothing under BAM.
+    microduck_mdp.add_dc_servo_dr_events(cfg)
+
     # ── Terrain: flat only (a ball on rough terrain is a different task) ──────
     cfg.scene.terrain.terrain_type = "plane"
     cfg.scene.terrain.terrain_generator = None

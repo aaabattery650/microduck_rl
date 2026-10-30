@@ -8,6 +8,7 @@ from mjlab.actuator.dc_actuator import DcMotorActuator
 from mjlab_microduck.actuator import (
     BacklashEncoderBamActuatorCfg,
     FrictionDRBamActuatorCfg,
+    VoltageDRDcServoActuatorCfg,
 )
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.spec_config import CollisionCfg
@@ -66,7 +67,7 @@ def get_walk_rollers_spec() -> mujoco.MjSpec:
     return mujoco.MjSpec.from_file(str(MICRODUCK_GROUNDCONTACT_ROLLERS_XML))
 
 
-SERVO_MESH_NAME = "xl330"
+SERVO_MESH_NAME = "hd1910"  # Feetech HD-1910 housing envelope (was "xl330"; see make_hd1910_model.py)
 SERVO_GEOM_SUFFIX = "_servo_collision"
 
 
@@ -117,6 +118,10 @@ def get_rollers_backlash_spec() -> mujoco.MjSpec:
 
 HOME_FRAME = EntityCfg.InitialStateCfg(
     joint_pos={
+        # Anchored first rules (first-match-wins): pin the passive jaw hinge
+        # (HD-1910 15th servo — see make_hd1910_model.py) at 0 so the unanchored
+        # patterns below can never catch it.
+        r"^passive_jaw$": 0.0,
         # Lower body — STAND2 pose: trunk shifted ~5mm forward over the feet so
         # the CoM sits over the ankle axis (was ~5mm behind it at the old HOME,
         # which biased the robot backward and made the standup policy droop its
@@ -177,10 +182,8 @@ _BAM_ACTUATOR_KWARGS = dict(
 )
 
 # -- MG90S hobby servo (DC motor model: stall torque + no-load speed + PD) --
-# Set USE_MG90S = False to go back to Pollen's measured XL330 (BAM) model.
 # Values are datasheet starting guesses at 6 V; replace them with numbers
 # measured on the pendulum rig once the servos arrive.
-USE_MG90S = True
 
 
 class MG90SActuator(DcMotorActuator):
@@ -246,15 +249,70 @@ MG90S_ACTUATOR = MG90SActuatorCfg(
     delay_max_lag=6,
 )
 
-if USE_MG90S:
+# -- Feetech HD-1910-C001 bus servo (DC motor model + firmware PD + voltage DR) --
+# Datasheet @7.4 V (2S nominal): stall 15 kg·cm = 1.47 N·m, no-load 113 rpm =
+# 11.8 rad/s, rated (continuous) 3.7 kg·cm = 0.363 N·m. Coreless motor, metal
+# gearbox 1:320, ball bearings, backlash <=0.5°, 12-bit magnetic encoder,
+# 4–8.4 V operating range, 21 g. Torque/speed/voltage numbers are datasheet
+# values; the firmware PD gains, gearbox Coulomb friction and reflected rotor
+# inertia are engineering estimates — replace them with pendulum-rig
+# measurements when the servos arrive (see AGENTS.md workflow step 2).
+HD1910_ACTUATOR = VoltageDRDcServoActuatorCfg(
+    target_names_expr=(r"^(?!passive_).*",),
+    stiffness=8.0,  # firmware P gain, N·m/rad (guess: stall torque at ~10.5° error — Feetech mode-4 PD, unmeasured)
+    damping=0.15,  # firmware D gain, N·m·s/rad (guess)
+    saturation_effort=1.47,  # stall torque @7.4 V (15 kg·cm)
+    effort_limit=0.6,  # continuous cap: ~1.65× the 0.363 N·m rating (bursts above rated are thermally fine; the servo itself cuts above 80 °C)
+    velocity_limit=11.8,  # no-load speed @7.4 V (113 rpm)
+    nominal_voltage=7.4,  # reference for the per-episode bus-voltage DR event
+    viscous_damping=0.0,  # the torque-speed envelope above already caps speed
+    frictionloss=0.06,  # gearbox Coulomb friction, N·m (estimate; DR'd 0.5–1.5× by the env cfg)
+    armature=0.0005,  # reflected rotor inertia J·320² (the XML's XL330 value 0.0018 assumes ~2× the gear ratio)
+    delay_min_lag=3,  # 15 ms min: Feetech TTL bus + firmware pipeline (XL330 range kept)
+    delay_max_lag=6,  # 30 ms max
+)
+
+# Bus-voltage DR range for the HD-1910 (volts at the servo, per episode): a 2S
+# pack sagging under 15 servos' load → fresh off the charger. Both ends stay
+# inside the 4–8.4 V operating range. Scales stall torque AND no-load speed.
+HD1910_VOLTAGE_RANGE = (6.2, 8.4)
+# Gearbox-friction DR for the DC-servo path (multiplies dof_frictionloss,
+# restore-then-scale): wide because 0.06 N·m is an unmeasured estimate for the
+# 1:320 metal train. Tighten after pendulum-rig measurements.
+HD1910_FRICTION_SCALE_RANGE = (0.5, 1.5)
+
+# Which servo model every task trains against:
+#   "hd1910"    — Feetech HD-1910-C001 (DC-motor model + voltage/friction DR)
+#   "mg90s"     — MG90S hobby servo (DC-motor model, no voltage DR)
+#   "bam_xl330" — Pollen's measured Dynamixel XL330 (BAM M6 voltage model)
+# Override per shell without editing code: MICRODUCK_ACTUATOR=bam_xl330 uv run train ...
+ACTUATOR_KIND = os.environ.get("MICRODUCK_ACTUATOR", "hd1910")
+
+if ACTUATOR_KIND == "hd1910":
+    actuators = HD1910_ACTUATOR
+elif ACTUATOR_KIND == "mg90s":
     actuators = MG90S_ACTUATOR
-else:
+elif ACTUATOR_KIND == "bam_xl330":
     actuators = FrictionDRBamActuatorCfg(**_BAM_ACTUATOR_KWARGS)
+else:
+    raise ValueError(
+        f"Unknown ACTUATOR_KIND {ACTUATOR_KIND!r}; expected one of "
+        "'hd1910', 'mg90s', 'bam_xl330' (or set MICRODUCK_ACTUATOR)."
+    )
+
+# True when the selected actuator is a DC-servo model (HD-1910 / MG90S):
+# gearbox friction is native dof_frictionloss (randomizable) and the
+# bus-voltage DR event applies. False under BAM (its own vin/friction DR).
+IS_DC_SERVO = ACTUATOR_KIND in ("hd1910", "mg90s")
 
 # Same BAM actuator, but the firmware position loop reads the encoder THROUGH
 # the passive_<joint>_backlash hinges (the real encoder is on the output side
 # of the gear play). Only for the backlash model; the target regex already
 # excludes the passive_* backlash joints from actuation.
+# NOTE: the backlash twins stay on the XL330 BAM path regardless of
+# ACTUATOR_KIND — they are XL330-study infrastructure. An HD-1910 backlash
+# twin would regenerate the XMLs with `add_backlash.py <xml> --backlash-deg
+# 0.5` (datasheet play) and add an encoder-through-backlash DC-servo subclass.
 backlash_actuators = BacklashEncoderBamActuatorCfg(**_BAM_ACTUATOR_KWARGS)
 
 # -- BAM M4 actuator

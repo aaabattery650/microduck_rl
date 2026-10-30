@@ -583,6 +583,9 @@ def make_microduck_ground_pick_env_cfg(play: bool = False, rough: bool = False) 
             },
         )
 
+    # HD-1910 (DC-servo) friction + bus-voltage DR — registers nothing under BAM.
+    microduck_mdp.add_dc_servo_dr_events(cfg)
+
     if ENABLE_ARMATURE_RANDOMIZATION:
         # Match velocity: reflected rotor inertia (non-accumulating, affects BAM).
         cfg.events["randomize_armature"] = EventTermCfg(

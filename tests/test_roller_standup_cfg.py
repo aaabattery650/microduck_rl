@@ -152,8 +152,19 @@ def test_joint_indices_match_actual_roller_model():
     assert [articulated[i] for i in _WHEEL_JOINTS] == [
         "passive_LF_wheel", "passive_LR_wheel", "passive_RF_wheel", "passive_RR_wheel",
     ]
-    # Aucun recouvrement, et les trois listes couvrent tous les joints.
-    assert len(set(_LEG_JOINTS) | set(_NECK_JOINTS) | set(_WHEEL_JOINTS)) == len(articulated)
+    # Le HD-1910 ajoute passive_jaw (mâchoire, invisible pour la policy via le
+    # préfixe passive_) : quatrième catégorie, intercalée après head_roll.
+    assert articulated.index("passive_jaw") > articulated.index("head_roll")
+    # Aucun recouvrement, et les quatre listes couvrent tous les joints.
+    assert (
+        len(
+            set(_LEG_JOINTS)
+            | set(_NECK_JOINTS)
+            | set(_WHEEL_JOINTS)
+            | {articulated.index("passive_jaw")}
+        )
+        == len(articulated)
+    )
 
 
 def test_recovery_rewards_present_with_expected_weights():

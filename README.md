@@ -111,15 +111,34 @@ See `src/mjlab_microduck/tasks/backlash.py`.
 
 ## Actuator model
 
-All tasks use the [BAM](https://github.com/Rhoban/bam) M6 actuator model for
-the Dynamixel XL330 (voltage control law, back-EMF, Coulomb/Stribeck/load-dependent
-friction), with per-env domain randomization on battery voltage, voltage sag
-under load, command delay, and friction magnitude
-(`FrictionDRBamActuator` in `src/mjlab_microduck/actuator/`).
+The default actuator is the **Feetech HD-1910-C001** (`HD1910_ACTUATOR` in
+`src/mjlab_microduck/robot/microduck_constants.py`): a DC-motor model
+(datasheet torque-speed envelope at 7.4 V: 1.47 N·m stall, 11.8 rad/s
+no-load, 0.6 N·m continuous cap) behind a firmware position-PD, with
+per-episode domain randomization on
+
+- **bus voltage** 6.2–8.4 V (scales stall torque AND no-load speed — battery
+  sag / pack state, via `VoltageDRDcServoActuator`),
+- **firmware PD gains** ±15 % / ±10 % (`randomize_delayed_actuator_gains`),
+- **gearbox friction** ×0.5–1.5 (native `dof_frictionloss` scaling),
+- plus 15–30 ms command delay (TTL bus + firmware pipeline) in the actuator cfg.
+
+Datasheet numbers are exact; the PD gains, gearbox friction and reflected
+rotor inertia are estimates to replace with pendulum-rig measurements.
+
+Alternative models, selected with `MICRODUCK_ACTUATOR=<kind>` (or edit
+`ACTUATOR_KIND`):
+
+| Kind | Actuator | Notes |
+|---|---|---|
+| `hd1910` (default) | `VoltageDRDcServoActuator` | Feetech HD-1910-C001 DC-servo model + voltage DR |
+| `mg90s` | `MG90SActuator` | MG90S hobby servo (DC-motor model, no voltage DR) |
+| `bam_xl330` | `FrictionDRBamActuator` | Pollen's measured Dynamixel XL330 ([BAM](https://github.com/Rhoban/bam) M6 voltage control law, back-EMF, Coulomb/Stribeck/load-dependent friction) + friction DR |
 
 At this scale — tiny servos driving a ~800 g biped — actuator fidelity is most
-of the sim2real gap, which is why the actuator is modeled down to its voltage
-control law instead of an ideal PD.
+of the sim2real gap, which is why the XL330 is modeled down to its voltage
+control law and the HD-1910's torque-speed envelope is randomized over its
+whole battery voltage range.
 
 ## Robot models
 

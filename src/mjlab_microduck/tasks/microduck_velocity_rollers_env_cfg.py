@@ -439,6 +439,9 @@ def make_microduck_velocity_rollers_env_cfg(
             },
         )
 
+    # HD-1910 (DC-servo) friction + bus-voltage DR — registers nothing under BAM.
+    microduck_mdp.add_dc_servo_dr_events(cfg)
+
     if ENABLE_ARMATURE_RANDOMIZATION:
         # Legs/head only — the wheel bearings' tiny armature is excluded (its DR
         # is the frictionloss event above).

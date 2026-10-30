@@ -617,6 +617,9 @@ def make_microduck_roulade_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         )
 
+    # HD-1910 (DC-servo) friction + bus-voltage DR — registers nothing under BAM.
+    microduck_mdp.add_dc_servo_dr_events(cfg)
+
     # ── Terrain ───────────────────────────────────────────────────────────────
     cfg.scene.terrain.terrain_type = "plane"
     cfg.scene.terrain.terrain_generator = None

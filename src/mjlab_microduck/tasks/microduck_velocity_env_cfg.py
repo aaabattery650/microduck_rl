@@ -30,8 +30,8 @@ ENABLE_SYMMETRY = False
 # Domain randomization toggles
 ENABLE_COM_RANDOMIZATION = True
 ENABLE_HEAD_COM_RANDOMIZATION = True  # Randomize CoM of the head assembly bodies
-ENABLE_KP_RANDOMIZATION = False # Was True
-ENABLE_KD_RANDOMIZATION = False # Was True
+ENABLE_KP_RANDOMIZATION = True  # firmware P ±15% per episode (BAM: kp_scale; HD-1910: stiffness scale)
+ENABLE_KD_RANDOMIZATION = True  # firmware D ±10% per episode
 ENABLE_MASS_INERTIA_RANDOMIZATION = True  # Can enable once walking is stable
 ENABLE_JOINT_FRICTION_RANDOMIZATION = True  # Scales BAM's friction budget per-env via FrictionDRBamActuator.friction_scale
 ENABLE_JOINT_DAMPING_RANDOMIZATION = False
@@ -40,6 +40,9 @@ ENABLE_VELOCITY_PUSHES = True  # Velocity-based pushes for robustness training
 ENABLE_IMU_ORIENTATION_RANDOMIZATION = True  # Simulates mounting errors
 ENABLE_ENCODER_BIAS = True  # Per-env joint encoder calibration offset (actor obs sees joint_pos + bias)
 ENABLE_BASE_ORIENTATION_RANDOMIZATION = False  # Randomize initial tilt to force reactive behavior
+# HD-1910 DC-servo extras (registered by mdp.add_dc_servo_dr_events; no-ops under BAM):
+# per-episode bus voltage scaling the torque-speed envelope + gearbox-friction scaling.
+ENABLE_DC_SERVO_DR = True
 
 # Head/body pose command tracking (replaces the old neck-offset disturbance scheme).
 # Head pose: 4D deltas-from-HOME on neck/head joints; vel env tracks these as a
@@ -482,17 +485,23 @@ def make_microduck_velocity_env_cfg(
             },
         )
 
+    if ENABLE_DC_SERVO_DR:
+        # HD-1910 (DC-servo) friction + bus-voltage DR. Registers nothing under
+        # the BAM actuator, so XL330 runs keep their exact pre-HD-1910 event set.
+        microduck_mdp.add_dc_servo_dr_events(cfg)
+
     if ENABLE_JOINT_DAMPING_RANDOMIZATION:
         # Randomize joint damping (lubrication, temperature effects).
         # Custom non-accumulating scaler. NOTE: no-op under BAM (dof_damping
-        # zeroed in edit_spec); only affects the XML position actuator.
+        # zeroed in edit_spec); only affects the XML position actuator. The
+        # per-world expansion of dof_damping is declared by the
+        # expand_bam_friction_fields startup event above.
         cfg.events["randomize_joint_damping"] = EventTermCfg(
             func=microduck_mdp.randomize_dof_field_scaled,
             mode="reset",
-            domain_randomization=True,
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=(r".*",)),
-                "field": "dof_damping",  # required by domain_randomization=True
+                "field": "dof_damping",
                 "scale_range": JOINT_DAMPING_RANDOMIZATION_RANGE,
             },
         )

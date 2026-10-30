@@ -91,24 +91,43 @@ def _resolve_play_face_up():
         print(f"[roller_standup] STANDUP_PLAY_FACE_UP='{raw}' invalide -> défaut {PLAY_FACE_UP}")
         return PLAY_FACE_UP
 
-# ── Indices de joints — les roues passives sont INTERCALÉES ───────────────────
-# Ordre réel du modèle rollers (18 joints après le free-joint), vérifié dans
-# MuJoCo via get_walk_rollers_spec().compile() :
-#   0-4   left_hip_yaw, left_hip_roll, left_hip_pitch, left_knee, left_ankle
-#   5-6   passive_LF_wheel, passive_LR_wheel
-#   7-10  neck_pitch, head_pitch, head_yaw, head_roll
-#   11-15 right_hip_yaw, right_hip_roll, right_hip_pitch, right_knee, right_ankle
-#   16-17 passive_RF_wheel, passive_RR_wheel
-# Le standup utilise [0-4, 9-13] / [5-8] : ce sont les indices du modèle SANS
+# ── Indices de joints — résolus par NOM (les passives s'intercalent) ─────────
+# Ordre réel du modèle rollers (19 joints après le free-joint), joints passifs
+# INTERCALÉS (roues + passive_jaw du HD-1910) : les indices en dur pourrissent,
+# on résout donc par nom dans l'ordre des joints articulés du vrai modèle.
+# Le standup historique utilisait [0-4, 9-13] / [5-8] : indices du modèle SANS
 # roues, ils ne valent PAS ici. Verrouillé par tests/test_roller_standup_cfg.py.
 #
 # Seul _LEG_JOINTS est consommé (par les récompenses de pose). _NECK_JOINTS et
 # _WHEEL_JOINTS servent à la documentation et au test d'indices : le cou est
 # résolu par NOM (neck_joint_pos_l2 appelle find_joints(r".*(neck|head).*") à
 # chaque pas) et les roues par la regex ^passive_.*.
-_LEG_JOINTS   = [0, 1, 2, 3, 4, 11, 12, 13, 14, 15]
-_NECK_JOINTS  = [7, 8, 9, 10]
-_WHEEL_JOINTS = [5, 6, 16, 17]
+def _resolve_articulated_indices(names: tuple[str, ...]) -> list[int]:
+    """Indices de ``names`` dans l'ordre des joints articulés (non-free) du
+    modèle rollers réel — jamais de constantes en dur (invariant AGENTS :
+    les joints passifs s'intercalent, seul le nom est stable)."""
+    import mujoco
+
+    from mjlab_microduck.robot.microduck_constants import get_walk_rollers_spec
+
+    order = [
+        j.name
+        for j in get_walk_rollers_spec().joints
+        if j.name and j.type != mujoco.mjtJoint.mjJNT_FREE
+    ]
+    return [order.index(n) for n in names]
+
+
+_LEG_JOINTS = _resolve_articulated_indices((
+    "left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle",
+    "right_hip_yaw", "right_hip_roll", "right_hip_pitch", "right_knee", "right_ankle",
+))
+_NECK_JOINTS = _resolve_articulated_indices(
+    ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+)
+_WHEEL_JOINTS = _resolve_articulated_indices(
+    ("passive_LF_wheel", "passive_LR_wheel", "passive_RF_wheel", "passive_RR_wheel")
+)
 
 # Récompenses de PATINAGE de l'env roller : aucun sens quand on est par terre.
 # feet_flat : les lames ne sont PAS à plat pendant la montée → combattrait le geste.

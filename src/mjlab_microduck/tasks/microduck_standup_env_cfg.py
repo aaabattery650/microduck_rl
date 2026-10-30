@@ -829,6 +829,9 @@ def make_microduck_standup_env_cfg(
             },
         )
 
+    # HD-1910 (DC-servo) friction + bus-voltage DR — registers nothing under BAM.
+    microduck_mdp.add_dc_servo_dr_events(cfg)
+
     # NOTE: IMU mounting-misalignment is applied at the OBSERVATION level below
     # (matching velocity) — the old event-based randomize_imu_orientation wrote
     # site_quat, which under mjlab 1.3.0 is neither per-env nor read by the obs.

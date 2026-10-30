@@ -3295,13 +3295,20 @@ def randomize_delayed_actuator_gains(
 ):
     """Randomize firmware PD gains per episode (NON-accumulating).
 
-    Under the canonical BAM actuator (``bam.mjlab.BamActuator``) gains are scaled
-    per-env via ``set_gains``/``reset_gains`` (the actuator owns ``kp_scale``/
-    ``kd_scale``), so we never touch the MuJoCo model — no accumulation risk. The
-    sampled per-joint factors are averaged into a single scalar per env (the
-    actuator applies one scale across its joints), matching the previous behavior.
-    Non-BAM actuators are skipped (e.g. the roller XmlActuator, which doesn't
-    expose set_gains).
+    Two actuator paths, both restore-nominal-then-apply so repeated resets
+    never accumulate:
+
+    - BAM (``bam.mjlab.BamActuator``): gains are scaled per-env via
+      ``set_gains``/``reset_gains`` (the actuator owns ``kp_scale``/
+      ``kd_scale``), so we never touch the MuJoCo model. The sampled
+      per-joint factors are averaged into a single scalar per env (the
+      actuator applies one scale across its joints).
+    - DC-servo firmware PD (mjlab ``IdealPdActuator`` — the HD-1910 / MG90S
+      model): the actuator owns absolute per-joint ``stiffness``/``damping``
+      tensors plus their defaults, so per-joint factors apply directly.
+
+    Actuators with neither interface are skipped (e.g. the roller
+    XmlActuator, which doesn't expose set_gains).
 
     Args:
         env: The environment
@@ -3313,6 +3320,7 @@ def randomize_delayed_actuator_gains(
     """
     del operation
     from bam.mjlab import BamActuator
+    from mjlab.actuator.pd_actuator import IdealPdActuator
 
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
@@ -3322,18 +3330,23 @@ def randomize_delayed_actuator_gains(
     asset: Entity = env.scene[asset_cfg.name]
 
     for actuator in asset.actuators:
-        if not isinstance(actuator, BamActuator):
-            continue
         n_joints = len(actuator.ctrl_ids)
         kp_samples = torch.rand(len(env_ids), n_joints, device=env.device) * (kp_range[1] - kp_range[0]) + kp_range[0]
         kd_samples = torch.rand(len(env_ids), n_joints, device=env.device) * (kd_range[1] - kd_range[0]) + kd_range[0]
-        # Restore nominal first (prevents accumulation), then apply fresh scale.
-        actuator.reset_gains(env_ids)
-        actuator.set_gains(
-            env_ids,
-            kp_scale=kp_samples.mean(dim=1, keepdim=True),
-            kd_scale=kd_samples.mean(dim=1, keepdim=True),
-        )
+        if isinstance(actuator, BamActuator):
+            # Restore nominal first (prevents accumulation), then apply fresh scale.
+            actuator.reset_gains(env_ids)
+            actuator.set_gains(
+                env_ids,
+                kp_scale=kp_samples.mean(dim=1, keepdim=True),
+                kd_scale=kd_samples.mean(dim=1, keepdim=True),
+            )
+        elif isinstance(actuator, IdealPdActuator):
+            # Restore nominal first (prevents accumulation), then scale per joint.
+            actuator.stiffness[env_ids] = actuator.default_stiffness[env_ids]
+            actuator.damping[env_ids] = actuator.default_damping[env_ids]
+            actuator.stiffness[env_ids] *= kp_samples
+            actuator.damping[env_ids] *= kd_samples
 
 
 @requires_model_fields("dof_frictionloss", "dof_damping")
@@ -3380,6 +3393,115 @@ def randomize_bam_friction(
             actuator.reset_friction_scale(env_ids)
             samples = torch.rand(len(env_ids), 1, device=env.device) * (hi - lo) + lo
             actuator.set_friction_scale(env_ids, samples)
+
+
+@requires_model_fields("dof_frictionloss")
+def randomize_servo_frictionloss(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    scale_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+):
+    """Scale the servo joints' gearbox friction (dof_frictionloss) per episode.
+
+    DC-servo path (HD-1910 / MG90S): under these actuators dof_frictionloss is
+    native MuJoCo joint friction (NOT zeroed like under BAM), so restore-then-
+    scale works. The decorator declares the per-world field expansion — a
+    dedicated wrapper (instead of decorating the generic
+    ``randomize_dof_field_scaled``) so other users of that function keep their
+    own field declarations.
+    """
+    return randomize_dof_field_scaled(
+        env,
+        env_ids,
+        field="dof_frictionloss",
+        scale_range=scale_range,
+        asset_cfg=asset_cfg,
+    )
+
+
+def randomize_dc_servo_voltage(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    voltage_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+):
+    """Per-episode bus-voltage randomization for the DC-servo actuator (NON-accumulating).
+
+    The VoltageDRDcServoActuator (HD-1910) scales its DC torque-speed envelope
+    — stall torque AND no-load speed — with supply voltage, like a real DC
+    servo on a sagging battery. Samples a per-env voltage in ``voltage_range``
+    (volts at the servo) and applies scale = V / cfg.nominal_voltage. Restores
+    nominal (1.0) first to avoid accumulation. No-op on actuators without the
+    voltage hook (BAM does its own vin DR inside the actuator; MG90S has none).
+    """
+    from mjlab_microduck.actuator.voltage_dr_dc import VoltageDRDcServoActuator
+
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+    else:
+        env_ids = env_ids.to(env.device, dtype=torch.int)
+
+    asset: Entity = env.scene[asset_cfg.name]
+    lo, hi = voltage_range
+    for actuator in asset.actuators:
+        if isinstance(actuator, VoltageDRDcServoActuator):
+            actuator.reset_voltage_scale(env_ids)
+            samples = torch.rand(len(env_ids), 1, device=env.device) * (hi - lo) + lo
+            actuator.set_voltage_scale(env_ids, samples / actuator.cfg.nominal_voltage)
+
+
+def add_dc_servo_dr_events(
+    cfg,
+    voltage_range: tuple[float, float] | None = None,
+    friction_scale_range: tuple[float, float] | None = None,
+) -> None:
+    """Wire the DC-servo (HD-1910) domain-randomization events into an env cfg.
+
+    Appends two reset events next to the BAM friction event every task cfg
+    already registers:
+
+    - ``randomize_joint_friction_dc``: gearbox friction as native
+      ``dof_frictionloss`` scaling (under the DC actuator the field is NOT
+      zeroed, unlike under BAM), restore-then-scale per episode.
+    - ``randomize_motor_voltage``: per-episode bus voltage scaling the
+      torque-speed envelope (see ``randomize_dc_servo_voltage``).
+
+    No-op under the BAM XL330 actuator (IS_DC_SERVO False): registered nothing,
+    so the cfg stays exactly the pre-HD-1910 one. The voltage event is also a
+    self-guarding no-op for actuators without the hook (MG90S). Idempotent.
+    """
+    from mjlab.managers import EventTermCfg
+
+    from mjlab_microduck.robot.microduck_constants import (
+        HD1910_FRICTION_SCALE_RANGE,
+        HD1910_VOLTAGE_RANGE,
+        IS_DC_SERVO,
+    )
+
+    if not IS_DC_SERVO:
+        return
+    if voltage_range is None:
+        voltage_range = HD1910_VOLTAGE_RANGE
+    if friction_scale_range is None:
+        friction_scale_range = HD1910_FRICTION_SCALE_RANGE
+
+    cfg.events["randomize_joint_friction_dc"] = EventTermCfg(
+        func=randomize_servo_frictionloss,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=(r"^(?!passive_).*",)),
+            "scale_range": friction_scale_range,
+        },
+    )
+    cfg.events["randomize_motor_voltage"] = EventTermCfg(
+        func=randomize_dc_servo_voltage,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "voltage_range": voltage_range,
+        },
+    )
 
 
 def randomize_mass_and_inertia(

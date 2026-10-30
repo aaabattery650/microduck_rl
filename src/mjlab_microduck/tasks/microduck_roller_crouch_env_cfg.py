@@ -300,6 +300,8 @@ def make_microduck_roller_crouch_env_cfg(play: bool = False) -> ManagerBasedRlEn
                 "scale_range": JOINT_FRICTION_RANDOMIZATION_RANGE,
             },
         )
+    # HD-1910 (DC-servo) friction + bus-voltage DR — registers nothing under BAM.
+    microduck_mdp.add_dc_servo_dr_events(cfg)
     if ENABLE_ARMATURE_RANDOMIZATION:
         cfg.events["randomize_armature"] = EventTermCfg(
             func=dr.joint_armature, mode="reset",

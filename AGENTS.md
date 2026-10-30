@@ -1,7 +1,7 @@
 # AGENTS.md
 
 RL training environments for Microduck — a ~800 g, ~25 cm tall bipedal
-robot with 14 Dynamixel XL330 servos — built on [mjlab](https://github.com/mujocolab/mjlab)
+robot with 14 servos (Dynamixel XL330 in the official build; this checkout defaults to the Feetech HD-1910-C001, see README "Actuator model") — built on [mjlab](https://github.com/mujocolab/mjlab)
 (MuJoCo Warp) with PPO (rsl_rl). Policies are trained here at 50 Hz, exported to
 ONNX, and deployed by the runtime in the `pollen-robotics/microduck` repo on
 the real robot. Sim2real transfer
@@ -63,21 +63,35 @@ Never launch a long run without one.
   13D command block `[twist(3), head_pose(4), body_pose(6)]`, in that order.
   An env that doesn't use a command slot ZERO-PADS it (keep the obs term,
   sample tiny ranges) — never delete a slot.
-- **Joint layout** (14 servos, ctrl idx = joint idx on walk/groundcontact
-  models): 0–4 left leg (hip_yaw, hip_roll, hip_pitch, knee, ankle), 5–8
-  neck/head (neck_pitch, head_pitch, head_yaw, head_roll), 9–13 right leg.
-  On roller/backlash models, passive joints INTERLEAVE — never hardcode joint
-  indices in mdp functions; use the `_servo_joint_ids` / `_servo_joint_pos`
-  helpers in mdp.py (identity on plain models, correct everywhere else).
-- **Unactuated joints are all named `passive_*`** (wheels, backlash hinges).
-  Every actuator/obs/reward selector uses `^(?!passive_).*` — keep the prefix
-  convention when adding joints, and new `passive_` regexes must not
+- **Joint layout** (14 servos, ctrl idx 0–13 = canonical order: 0–4 left leg
+  (hip_yaw, hip_roll, hip_pitch, knee, ankle), 5–8 neck/head (neck_pitch,
+  head_pitch, head_yaw, head_roll), 9–13 right leg). NOTE: since the HD-1910
+  jaw was added (passive_jaw, a child of jaw_soft, sits between head_roll and
+  the right leg in HINGE order), hinge/qpos indices of the right leg are +1 on
+  walk/groundcontact models — never hardcode them in mdp functions; use the
+  `_servo_joint_ids` / `_servo_joint_pos` helpers in mdp.py (name-resolved,
+  correct everywhere). Action indices are unaffected (the 14-D action vector
+  is actuator-space). On roller/backlash models, passive joints INTERLEAVE
+  further. The jaw is policy-invisible by the `passive_` prefix; the real jaw
+  servo is daemon-commanded at deployment.
+- **Unactuated joints are all named `passive_*`** (wheels, backlash hinges, the
+  HD-1910 jaw). Every actuator/obs/reward selector uses `^(?!passive_).*` — keep
+  the prefix convention when adding joints, and new `passive_` regexes must not
   accidentally match backlash joints (`^passive_.*wheel`, not `^passive_.*`).
-- **Actuators are BAM** (voltage-controlled XL330 model, friction computed by
-  the actuator). Two consequences: any STANDALONE env cfg must register the
-  `expand_bam_friction_fields` startup event, and joint-friction DR must scale
-  the actuator's `friction_scale` — `dof_frictionloss` is zeroed under BAM, so
-  randomizing it is a silent no-op.
+- **The actuator is selected globally** in `microduck_constants.py` (`ACTUATOR_KIND`,
+  env-overridable via `MICRODUCK_ACTUATOR`): default `hd1910` (Feetech HD-1910-C001
+  DC-servo model), with `bam_xl330` (Pollen's measured XL330) and `mg90s` as
+  alternatives. DR wiring differs by kind and every DR function self-guards:
+  - **BAM** (voltage-controlled XL330, friction computed by the actuator): any
+    STANDALONE env cfg must register the `expand_bam_friction_fields` startup
+    event, and joint-friction DR must scale the actuator's `friction_scale` —
+    `dof_frictionloss` is zeroed under BAM, so randomizing it is a silent no-op.
+  - **DC servo** (HD-1910/MG90S): gearbox friction IS native `dof_frictionloss`
+    (scale it via `randomize_servo_frictionloss`), bus voltage scales the
+    torque-speed envelope via `VoltageDRDcServoActuator.set_voltage_scale`, and
+    firmware PD gains are the actuator's `stiffness`/`damping` tensors. Wire all
+    of it with `microduck_mdp.add_dc_servo_dr_events(cfg)` (no-op under BAM).
+
 - **Obs normalization is ON** → the normalizer must be baked into the ONNX.
   `scripts/export.py` does this; in-sim play hides the bug (it applies the
   normalizer anyway), so never hand-convert a checkpoint.
