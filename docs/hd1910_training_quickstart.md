@@ -51,27 +51,57 @@ under initial tilt, pushes and head motion. Best first run: fast, dead-simple
 success criterion, and it validates the whole HD-1910 pipeline end to end
 before you invest in gaits.
 
-```bash
-uv run train Mjlab-Stand-Flat-MicroDuck --env.scene.num-envs 4096
-```
+**Before you leave it running:** (a) Windows Settings → System → Power →
+**Sleep = Never** when plugged in (sleep suspends WSL and kills training),
+(b) don't close the terminal windows, (c) always pass `--agent.max_iterations`
+— without it training runs to 50 000.
 
-Budget **500–1500 iterations** (~15–60 min on a modern GPU). Healthy run:
-`Mean episode length` climbing toward the timeout fast, `fell_over` → 0,
-`upright`/`stand_height`/`pose` all growing. Gait rewards are absent by
-design — nothing pays for stepping. The exported ONNX drops into the
-runtime's `stand` slot (`uv run publish ... --slot stand`).
-
-Then view it:
+**Terminal 1 — training** (the `tee` copies the output to a file so the
+dashboard can read it; `1500` is the full budget for this task, ~15–60 min
+on a modern GPU):
 
 ```bash
-uv run play Mjlab-Stand-Flat-MicroDuck --checkpoint-file logs/rsl_rl/stand/<ts>/model_1000.pt
+cd ~/microduck_rl
+uv run train Mjlab-Stand-Flat-MicroDuck --env.scene.num-envs 4096 \
+    --agent.max_iterations 1500 2>&1 | tee /tmp/train_stand.log
 ```
+
+**Terminal 2 — live dashboard** (opens http://localhost:8765: graphs
+refresh every 5 s; the ▶ button opens the 3D viewer on the latest
+checkpoint):
+
+```bash
+cd ~/microduck_rl
+uv run scripts/train_monitor.py --task Mjlab-Stand-Flat-MicroDuck --log /tmp/train_stand.log
+```
+
+You can leave this running unattended — training stops by itself at 1500.
+
+**After it finishes (or the next morning):**
+
+```bash
+LATEST=$(ls -t logs/rsl_rl/stand/*/model_*.pt | head -1)   # newest checkpoint
+uv run play Mjlab-Stand-Flat-MicroDuck --checkpoint-file "$LATEST" --num-envs 1
+```
+
+Healthy run: `Mean episode length` climbing toward the timeout fast,
+`fell_over` → 0, `upright`/`stand_height`/`pose` all growing. Gait rewards
+are absent by design — nothing pays for stepping. The exported ONNX drops
+into the runtime's `stand` slot (`uv run publish ... --slot stand`).
 
 ## 3. Real training (walking)
 
+Same two-terminal pattern — swap the task id, log name, and budget
+(**4000–6000 iterations**, ~1–3 h: the true overnight run):
+
 ```bash
-wandb login                     # or: export WANDB_MODE=offline
-uv run train Mjlab-Velocity-Flat-MicroDuck --env.scene.num-envs 4096
+# terminal 1:
+wandb login                     # optional; or export WANDB_MODE=offline
+uv run train Mjlab-Velocity-Flat-MicroDuck --env.scene.num-envs 4096 \
+    --agent.max_iterations 5000 2>&1 | tee /tmp/train_vel.log
+
+# terminal 2:
+uv run scripts/train_monitor.py --task Mjlab-Velocity-Flat-MicroDuck --log /tmp/train_vel.log
 ```
 
 - Budget: **4000–6000 iterations** (~1–3 h on a modern GPU) for a usable gait;
