@@ -85,6 +85,27 @@ uv run train Mjlab-Velocity-Flat-MicroDuck --env.scene.num-envs 4096
   and **every `Episode_Reward/<penalty>` ≤ 0** (a positive penalty = a
   reward-hacked run — stop and fix, don't deploy).
 
+## Watching it train: live dashboard
+
+Terminal 1 runs training with its output teed to a file; terminal 2 runs a
+small local dashboard (graphs + a button that opens the 3D viewer on the
+latest checkpoint — the fully accurate model):
+
+```bash
+# terminal 1 — training, tee'd:
+uv run train Mjlab-Stand-Flat-MicroDuck --env.scene.num-envs 4096 2>&1 | tee /tmp/train_stand.log
+
+# terminal 2 — dashboard (opens in your browser at http://localhost:8765):
+uv run scripts/train_monitor.py --task Mjlab-Stand-Flat-MicroDuck --log /tmp/train_stand.log
+```
+
+The dashboard live-plots mean reward, episode length, `fell_over`, the task
+reward terms and the penalties, and its **Watch robot** button runs
+`play --checkpoint-file <latest>` — checkpoints refresh every 250 iterations.
+No GUI toolkit needed (it's a local web page), works on WSL2. Alternatively
+`wandb login` gives the full hosted dashboard, and
+`uv run play <TASK> --checkpoint-file <...>` opens the viewer directly.
+
 ## 4. View the policy
 
 ```bash
