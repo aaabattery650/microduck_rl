@@ -194,11 +194,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         global LAST_MESSAGE
-        if self.path.startswith("/chart/"):
-            self._send(chart_png(int(self.path.rsplit("/", 1)[1])), "image/png")
-        elif self.path == "/status":
+        # Strip any query string first: the page's auto-refresh appends a
+        # cache-buster (?t=...) to chart URLs, which must not reach the parser.
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/chart/"):
+            self._send(chart_png(int(path.rsplit("/", 1)[1])), "image/png")
+        elif path == "/status":
             self._send(LAST_MESSAGE.encode(), "text/plain")
-        elif self.path == "/watch":
+        elif path == "/watch":
             ckpt = newest(str(REPO_ROOT / "logs" / "rsl_rl" / "*" / "*" / "model_*.pt"))
             if ckpt is None:
                 self._send(b"no checkpoint yet - train a little longer", "text/plain")
