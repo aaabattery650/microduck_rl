@@ -1,29 +1,33 @@
 #!/usr/bin/env bash
-# One-command policy viewer: finds the NEWEST checkpoint in this repo's logs/,
-# derives the task id from the experiment folder, launches the browser viewer.
+# One-command policy viewer: finds the NEWEST checkpoint across every known
+# clone of this repo, derives the task id from the experiment folder, picks a
+# sensible device, and launches the browser viewer.
 #
-#   bash scripts/watch.sh                              # newest checkpoint
+#   bash scripts/watch.sh                              # newest checkpoint anywhere
 #   bash scripts/watch.sh --envs 4                     # four robots
 #   bash scripts/watch.sh --no-terminations            # watch falls, no reset
 #   bash scripts/watch.sh --task Mjlab-Stand-Flat-MicroDuck   # override task
+#   bash scripts/watch.sh --ckpt <path/to/model.pt>    # explicit checkpoint
+#   bash scripts/watch.sh --info                       # diagnostics only
 #
 # Then: wait ~1 min, open the printed http://localhost:PORT URL in your
-# browser. Ctrl+C closes the viewer. (Always viser+CPU: full-speed in the
-# browser, no VRAM contention with training, works on WSL2.)
+# browser. Ctrl+C closes the viewer.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
 
 ENVS=1
 TASK=""
+CKPT_ARG=""
 DEVICE=""
 DRY=0
+INFO=0
 EXTRA=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --task)  TASK="$2"; shift 2 ;;
     --envs)  ENVS="$2"; shift 2 ;;
+    --ckpt)  CKPT_ARG="$2"; shift 2 ;;
     --cpu)   DEVICE=cpu; shift ;;
     --gpu)   DEVICE=cuda:0; shift ;;
     --dry)   DRY=1; shift ;;
@@ -32,8 +36,61 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Device: GPU when it's free (fast, real-time); CPU when a training run owns
-# the GPU (avoids the CUDA-OOM viewer crash) or no GPU exists.
+# ── Checkpoint discovery: search EVERY known clone ──────────────────────────
+# The user may have several clones (~/microduck_rl, /mnt/c/...Documents/...);
+# the newest model_*.pt across all of them wins. play then runs from the clone
+# that OWNS the checkpoint (its venv resolves the task registry).
+search_roots() {
+  local r
+  echo "$ROOT"
+  for r in "$HOME/microduck_rl" /mnt/c/Users/*/Documents/microduck_r*; do
+    [ -d "$r/logs/rsl_rl" ] && echo "$r"
+  done
+}
+
+find_ckpt() {
+  local matches=() r f
+  while IFS= read -r r; do
+    while IFS= read -r f; do
+      matches+=("$r/$f")
+    done < <(cd "$r" && ls logs/rsl_rl/*/*/model_*.pt 2>/dev/null || true)
+  done < <(search_roots)
+  [ ${#matches[@]} -gt 0 ] || return 0
+  ls -t "${matches[@]}" 2>/dev/null | head -1 || true
+}
+
+if [ -n "$CKPT_ARG" ]; then
+  CKPT="$(cd "$(dirname "$CKPT_ARG")" && pwd)/$(basename "$CKPT_ARG")"
+else
+  CKPT="$(find_ckpt)"
+fi
+
+# Reposition to the clone that owns the checkpoint (its venv runs play).
+if [ -n "${CKPT:-}" ]; then
+  RROOT="$(cd "$(dirname "$(dirname "$(dirname "$CKPT")")")" 2>/dev/null && pwd || true)"
+  if [ -n "${RROOT:-}" ] && [ -d "$RROOT" ]; then cd "$RROOT"; fi
+fi
+
+# ── Diagnostics mode ────────────────────────────────────────────────────────
+if [ "$INFO" = 1 ]; then
+  echo "searched:"
+  search_roots | sed 's/^/  /'
+  echo "ckpt:     ${CKPT:-<none found>}"
+  echo "repo:     $(pwd)"
+  echo "training: $(pgrep -af 'bin/train' || echo 'not running')"
+  echo "cuda:     $(uv run python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null)"
+  echo "run without --info to launch the viewer"
+  exit 0
+fi
+
+if [ -z "${CKPT:-}" ]; then
+  echo "No model_*.pt found in any known clone — train something first,"
+  echo "or pass one explicitly:  bash scripts/watch.sh --ckpt /path/to/model_XXXX.pt"
+  exit 1
+fi
+echo "Newest checkpoint: $CKPT"
+
+# ── Device: GPU when free; CPU when training owns the GPU (OOM safety) ──────
 if [ -z "$DEVICE" ]; then
   if pgrep -f "bin/train" >/dev/null 2>&1; then
     DEVICE=cpu
@@ -47,24 +104,7 @@ if [ -z "$DEVICE" ]; then
   fi
 fi
 
-CKPT="$(ls -t logs/rsl_rl/*/*/model_*.pt 2>/dev/null | head -1 || true)"
-
-if [ "${INFO:-0}" = 1 ]; then
-  echo "repo:     $ROOT"
-  echo "ckpt:     ${CKPT:-<none found>}"
-  echo "training: $(pgrep -af 'bin/train' || echo 'not running')"
-  echo "cuda:     $(uv run python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null)"
-  echo "device:   ${DEVICE:-auto}"
-  echo "run without --info to launch the viewer"
-  exit 0
-fi
-
-if [ -z "${CKPT:-}" ]; then
-  echo "No checkpoints under $ROOT/logs — train something first."
-  exit 1
-fi
-echo "Newest checkpoint: $CKPT"
-
+# ── Task derivation from the experiment folder name ─────────────────────────
 if [ -z "$TASK" ]; then
   EXP="$(basename "$(dirname "$(dirname "$CKPT")")")"
   case "$EXP" in
