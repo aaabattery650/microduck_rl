@@ -46,6 +46,23 @@ this setup. For training/viewing commands see
   `uv run <cmd>` runs inside it.
 - Copy/paste in the terminal: `Ctrl+Shift+C/V` (plain Ctrl+C kills a program).
 
+## Watching from anywhere on your LAN (phone, laptop)
+
+All the web UIs (training dashboard :8765, reward lab :8766, lab 3D :8767,
+policy viewer :8080) listen on all interfaces — but WSL2 sits behind Windows'
+NAT, so other devices need a one-time port-forward. In **admin PowerShell**,
+from the repo's Windows checkout:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\wsl_lan_access.ps1
+```
+
+It prints the LAN URLs (e.g. `http://192.168.1.42:8765`) — open them on any
+device on the same network. **Rerun after each PC reboot** (WSL's internal IP
+changes). Alternative for Windows 11 22H2+: `networkingMode=mirrored` in
+`%USERPROFILE%\.wslconfig` makes WSL share the PC's interfaces directly, then
+no forwarding is needed at all (then `wsl --shutdown` and reopen Ubuntu).
+
 ## Troubleshooting — every error seen on this machine
 
 | Symptom | Cause | Fix |

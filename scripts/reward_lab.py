@@ -327,7 +327,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Duck Reward La
   <div id="motors"></div>
  </div>
  <div class="col mid"><h3>The duck</h3>
-  <iframe id="duck3d" src="http://localhost:__VISER_PORT__"></iframe>
+  <iframe id="duck3d"></iframe>
   <div class="note" id="scene_note"></div>
  </div>
  <div class="col right"><h3 id="rtitle"></h3>
@@ -349,6 +349,7 @@ let targets={};          // joint name -> rad offset from home
 let disabled=new Set();
 document.getElementById('motors').innerHTML = MOTORS.map(m=>
  `<button class="item" id="sel_${m.id}" onclick="select('motor','${m.id}')">${m.label}</button>`).join('');
+document.getElementById('duck3d').src = 'http://'+location.hostname+':__VISER_PORT__';
 document.getElementById('toggles').innerHTML = ['upright','stand_height','pose','head_pose_tracking',
   'body_ang_vel','action_rate_l2','self_collisions','dof_pos_limits'].map(t=>
  `<label style="font-size:13px;display:inline-block;margin:2px 8px"><input type="checkbox" checked
@@ -500,9 +501,17 @@ def main() -> int:
     init_preview(args.viser_port)
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
     url = f"http://localhost:{args.port}"
+    import socket as _s
+    try:
+        _sk = _s.socket(_s.AF_INET, _s.SOCK_DGRAM); _sk.connect(("8.8.8.8", 80))
+        lan = f"http://{_sk.getsockname()[0]}:{args.port}"; _sk.close()
+    except OSError:
+        lan = None
     if OVERRIDES.exists():
         print(f"[reward_lab] NOTE: overrides exist and will be loaded by the cfg: {OVERRIDES}")
     print(f"[reward_lab] {url}   3D inside the page  (Ctrl+C to stop)")
+    if lan:
+        print(f"[reward_lab] from other LAN devices: {lan} (3D on the same hostname, port {args.viser_port})")
     if not args.no_browser:
         webbrowser.open(url)
     server.serve_forever()

@@ -31,6 +31,7 @@ import io
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -252,6 +253,19 @@ def open_in_browser(url: str) -> None:
         pass  # the URL is printed; the user can open it by hand
 
 
+def lan_urls(port: int) -> list[str]:
+    """localhost + this machine's LAN address (for phone/other-PC access)."""
+    urls = [f"http://localhost:{port}"]
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        urls.append(f"http://{s.getsockname()[0]}:{port}")
+        s.close()
+    except OSError:
+        pass
+    return urls
+
+
 def main() -> int:
     global LOG_PATH, TASK
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -269,10 +283,10 @@ def main() -> int:
 
     threading.Thread(target=tail_loop, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    url = f"http://localhost:{args.port}"
-    print(f"[train_monitor] {url}   (watching {LOG_PATH}; Ctrl+C to stop)")
+    print("[train_monitor] reachable at:  " + "   ".join(lan_urls(args.port)))
+    print("[train_monitor] (Ctrl+C to stop; from OTHER LAN devices use the non-localhost URL)")
     if not args.no_browser:
-        threading.Timer(0.5, lambda: open_in_browser(url)).start()
+        threading.Timer(0.5, lambda: open_in_browser(f"http://localhost:{args.port}")).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
