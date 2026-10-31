@@ -16,6 +16,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+PUSH_ARGS=()
 ENVS=1
 TASK=""
 CKPT_ARG=""
@@ -32,6 +33,9 @@ while [ $# -gt 0 ]; do
     --gpu)   DEVICE=cuda:0; shift ;;
     --dry)   DRY=1; shift ;;
     --info)  INFO=1; shift ;;
+    --push)  PUSH_ARGS+=(--push "$2"); shift 2 ;;
+    --push-every) PUSH_ARGS+=(--push-every "$2"); shift 2 ;;
+    --no-push)   PUSH_ARGS+=(--no-push); shift ;;
     *)       EXTRA+=("$1"); shift ;;
   esac
 done
@@ -120,9 +124,17 @@ fi
 echo "Task: $TASK"
 
 pkill -f "bin/play" 2>/dev/null || true   # don't stack viewers
+pkill -f "play_tuned.py" 2>/dev/null || true
 
-CMD=(uv run play "$TASK" --checkpoint-file "$CKPT" --num-envs "$ENVS"
-     --viewer viser --device "$DEVICE" "${EXTRA[@]+"${EXTRA[@]}"}")
+if [ ${#PUSH_ARGS[@]} -gt 0 ]; then
+  # Push-controlled playback (own script: mjlab's play has no env overrides).
+  CMD=(uv run scripts/play_tuned.py --task "$TASK" --checkpoint-file "$CKPT"
+       --envs "$ENVS" --device "$DEVICE" "${PUSH_ARGS[@]}"
+       ${EXTRA[@]+"${EXTRA[@]}"})
+else
+  CMD=(uv run play "$TASK" --checkpoint-file "$CKPT" --num-envs "$ENVS"
+       --viewer viser --device "$DEVICE" "${EXTRA[@]+"${EXTRA[@]}"}")
+fi
 echo "Running: ${CMD[*]}"
 if [ "$DRY" = 1 ]; then exit 0; fi
 exec "${CMD[@]}"
