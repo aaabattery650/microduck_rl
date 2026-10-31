@@ -17,16 +17,34 @@ cd "$ROOT"
 
 ENVS=1
 TASK=""
+DEVICE=""
 DRY=0
 EXTRA=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --task)  TASK="$2"; shift 2 ;;
     --envs)  ENVS="$2"; shift 2 ;;
+    --cpu)   DEVICE=cpu; shift ;;
+    --gpu)   DEVICE=cuda:0; shift ;;
     --dry)   DRY=1; shift ;;
     *)       EXTRA+=("$1"); shift ;;
   esac
 done
+
+# Device: GPU when it's free (fast, real-time); CPU when a training run owns
+# the GPU (avoids the CUDA-OOM viewer crash) or no GPU exists.
+if [ -z "$DEVICE" ]; then
+  if pgrep -f "bin/train" >/dev/null 2>&1; then
+    DEVICE=cpu
+    echo "Training is running -> viewer on CPU (slow motion, but no VRAM conflict)."
+  elif uv run python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    DEVICE=cuda:0
+    echo "GPU is free -> viewer on GPU (real-time)."
+  else
+    DEVICE=cpu
+    echo "No GPU available -> viewer on CPU (slow motion)."
+  fi
+fi
 
 CKPT="$(ls -t logs/rsl_rl/*/*/model_*.pt 2>/dev/null | head -1 || true)"
 if [ -z "${CKPT:-}" ]; then
@@ -52,7 +70,7 @@ echo "Task: $TASK"
 pkill -f "bin/play" 2>/dev/null || true   # don't stack viewers
 
 CMD=(uv run play "$TASK" --checkpoint-file "$CKPT" --num-envs "$ENVS"
-     --viewer viser --device cpu "${EXTRA[@]+"${EXTRA[@]}"}")
+     --viewer viser --device "$DEVICE" "${EXTRA[@]+"${EXTRA[@]}"}")
 echo "Running: ${CMD[*]}"
 if [ "$DRY" = 1 ]; then exit 0; fi
 exec "${CMD[@]}"
