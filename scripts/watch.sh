@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
     --cpu)   DEVICE=cpu; shift ;;
     --gpu)   DEVICE=cuda:0; shift ;;
     --dry)   DRY=1; shift ;;
+    --info)  INFO=1; shift ;;
     *)       EXTRA+=("$1"); shift ;;
   esac
 done
@@ -47,6 +48,17 @@ if [ -z "$DEVICE" ]; then
 fi
 
 CKPT="$(ls -t logs/rsl_rl/*/*/model_*.pt 2>/dev/null | head -1 || true)"
+
+if [ "${INFO:-0}" = 1 ]; then
+  echo "repo:     $ROOT"
+  echo "ckpt:     ${CKPT:-<none found>}"
+  echo "training: $(pgrep -af 'bin/train' || echo 'not running')"
+  echo "cuda:     $(uv run python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null)"
+  echo "device:   ${DEVICE:-auto}"
+  echo "run without --info to launch the viewer"
+  exit 0
+fi
+
 if [ -z "${CKPT:-}" ]; then
   echo "No checkpoints under $ROOT/logs — train something first."
   exit 1
