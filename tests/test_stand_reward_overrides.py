@@ -67,3 +67,33 @@ def test_penalty_term_list_matches_the_sign_guard():
     cfg = make_microduck_stand_env_cfg()
     for name in _NEGATIVE_WEIGHT_TERMS:
         assert cfg.rewards[name].weight < 0, name
+
+
+def test_pose_targets_swap_the_reward_function(tmp_path, monkeypatch):
+    f = tmp_path / "stand_rewards.json"
+    _write(f, {"pose_targets": {"left_knee": 0.2}})
+    monkeypatch.setattr(stand, "_REWARD_OVERRIDES", f)
+    cfg = make_microduck_stand_env_cfg()
+    from mjlab_microduck.tasks.mdp import pose_targets_gaussian
+
+    assert cfg.rewards["pose"].func is pose_targets_gaussian
+    assert cfg.rewards["pose"].params["targets"] == {"left_knee": 0.2}
+    assert cfg.rewards["pose"].weight == 1.0  # weight preserved
+
+
+def test_unknown_pose_target_joint_fails_loud(tmp_path, monkeypatch):
+    f = tmp_path / "stand_rewards.json"
+    _write(f, {"pose_targets": {"left_elbow": 0.2}})
+    monkeypatch.setattr(stand, "_REWARD_OVERRIDES", f)
+    with pytest.raises(ValueError, match="unknown joint name"):
+        make_microduck_stand_env_cfg()
+
+
+def test_disabled_terms_get_zero_weight(tmp_path, monkeypatch):
+    f = tmp_path / "stand_rewards.json"
+    _write(f, {"disabled": ["stand_height", "self_collisions"]})
+    monkeypatch.setattr(stand, "_REWARD_OVERRIDES", f)
+    cfg = make_microduck_stand_env_cfg()
+    assert cfg.rewards["stand_height"].weight == 0.0
+    assert cfg.rewards["self_collisions"].weight == 0.0  # zero = off, allowed
+    assert cfg.rewards["upright"].weight == 2.0  # others untouched

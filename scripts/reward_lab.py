@@ -203,8 +203,9 @@ def update_scene(params: dict):
     """Reposition everything for the current selection + slider values."""
     if not PREVIEW:
         return
-    # optimal duck always shown
-    _place(PREVIEW["mesh_handles"], _qpos())
+    # targets ride along into every pose (blue duck = the rewarded pose)
+    targets = {k: float(v) for k, v in params.get("targets", {}).items()}
+    _place(PREVIEW["mesh_handles"], _qpos(targets))
     sel = SELECTION
     groups = params.get("groups", DEFAULTS["groups"])
     up_std = params.get("upright_std", DEFAULTS["upright_std"])
@@ -225,16 +226,15 @@ def update_scene(params: dict):
         jname = sel["id"]
         grp = JOINTS.get(jname, (0, 0, 0, ""))[3]
         std = float(groups.get(grp, 0.1))
+        base = dict(targets)
         for vid, sgn in (("g1", -1.0), ("g2", 1.0)):
-            _place_ghosts(vid, qpos_for({jname: sgn * std}))
-        _place_ghosts("g3", qpos_for({jname: sgn * 0.0}))
-        _place_ghosts("g4", qpos_for({jname: 0.0}))
+            _place_ghosts(vid, _qpos({**base, jname: base.get(jname, 0.0) + sgn * std}))
     elif sel["type"] == "imu":
         a = float(up_std)
-        _place_ghosts("g1", qpos_for(trunk_quat=_axis_quat((1, 0, 0), a)))
-        _place_ghosts("g2", qpos_for(trunk_quat=_axis_quat((1, 0, 0), -a)))
-        _place_ghosts("g3", qpos_for(trunk_quat=_axis_quat((0, 1, 0), a)))
-        _place_ghosts("g4", qpos_for(trunk_quat=_axis_quat((0, 1, 0), -a)))
+        _place_ghosts("g1", qpos_for(dict(targets), trunk_quat=_axis_quat((1, 0, 0), a)))
+        _place_ghosts("g2", qpos_for(dict(targets), trunk_quat=_axis_quat((1, 0, 0), -a)))
+        _place_ghosts("g3", qpos_for(dict(targets), trunk_quat=_axis_quat((0, 1, 0), a)))
+        _place_ghosts("g4", qpos_for(dict(targets), trunk_quat=_axis_quat((0, 1, 0), -a)))
     # height selection: ghosts parked; discs always track sliders
     PREVIEW["gate"]["low"].position = (0, 0, params.get("height_low", DEFAULTS["height_low"]))
     PREVIEW["gate"]["high"].position = (0, 0, params.get("height_high", DEFAULTS["height_high"]))
@@ -290,7 +290,8 @@ def curve_pose(std) -> bytes:
 
 # ═══ page ═══════════════════════════════════════════════════════════════════
 MOTORS_JS = json.dumps(
-    [{"id": n, "label": pretty(n), "group": JOINTS[n][3]} for n in sorted(JOINTS)]
+    [{"id": n, "label": pretty(n), "group": JOINTS[n][3],
+      "lo": JOINTS[n][0], "hi": JOINTS[n][1], "home": JOINTS[n][2]} for n in sorted(JOINTS)]
 )
 GROUPS_JS = json.dumps(DEFAULTS["groups"])
 DEFAULTS_JS = json.dumps(DEFAULTS)
@@ -333,6 +334,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Duck Reward La
   <div id="rbody"></div>
   <img id="curve">
   <h3>All weights (advanced)</h3>
+  <div id="toggles"></div>
   <div class="slide">upright weight <input type="range" id="upright_w" min="0" max="6" step="0.05" value="__UPW__" oninput="push()"></div>
   <div class="slide">stand-height weight <input type="range" id="height_w" min="0" max="6" step="0.05" value="__HW__" oninput="push()"></div>
   <div class="slide">pose weight <input type="range" id="pose_w" min="0" max="6" step="0.05" value="__PW__" oninput="push()"></div>
@@ -343,8 +345,14 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Duck Reward La
 const MOTORS=__MOTORS__, GROUPS=__GROUPS__, DEF=__DEFAULTS__;
 let sel={type:'imu',id:null};
 let groups={...GROUPS};
+let targets={};          // joint name -> rad offset from home
+let disabled=new Set();
 document.getElementById('motors').innerHTML = MOTORS.map(m=>
  `<button class="item" id="sel_${m.id}" onclick="select('motor','${m.id}')">${m.label}</button>`).join('');
+document.getElementById('toggles').innerHTML = ['upright','stand_height','pose','head_pose_tracking',
+  'body_ang_vel','action_rate_l2','self_collisions','dof_pos_limits'].map(t=>
+ `<label style="font-size:13px;display:inline-block;margin:2px 8px"><input type="checkbox" checked
+   onchange="toggle('${t}',this)"> ${t}</label>`).join('');
 function select(type,id=null){
   sel={type,id};
   for(const el of document.querySelectorAll('.left .item')) el.classList.remove('sel');
@@ -375,29 +383,42 @@ function render(){
     N.textContent='Discs track your sliders on the duck.';
   } else {
     const m=MOTORS.find(x=>x.id===sel.id); const std=groups[m.group];
+    const loD=(m.lo-m.home)*180/Math.PI, hiD=(m.hi-m.home)*180/Math.PI;
+    const cur=(targets[m.id]||0)*180/Math.PI;
     T.textContent=m.label;
-    R.innerHTML=`<div class="val">rewarded within ±${(std*180/Math.PI).toFixed(0)}° of home</div>
-     <div class="slide">band width <input type="range" id="g_${m.group}" min="0.02" max="0.5" step="0.005"
+    R.innerHTML=`<div class="val">rewarded within ±${(std*180/Math.PI).toFixed(0)}° of its target</div>
+     <div class="slide"><b>Target angle: <span id="tgt_v">${cur.toFixed(0)}°</span> from home</b>
+       <input type="range" id="tgt_${m.id}" min="${loD.toFixed(1)}" max="${hiD.toFixed(1)}" step="1"
+       value="${cur.toFixed(1)}" oninput="targets['${m.id}']=this.value*Math.PI/180;
+       document.getElementById('tgt_v').textContent=this.value+'°';push()"></div>
+     <div class="slide">Band width (tolerance) <input type="range" id="g_${m.group}" min="0.02" max="0.5" step="0.005"
        value="${std}" oninput="groups['${m.group}']=+this.value;push()"></div>
-     <div class="note">This sets the whole <b>${m.group.replace(/.*\\b(hip|knee|ankle)/,'$1')}</b> group's band.
-       Red/green ghosts = the motor pushed to each edge of the band.</div>`;
+     <div class="note">Blue duck now poses at YOUR target; ghosts = target ± band. Home is 0°.</div>`;
     document.getElementById('curve').src='/curve/pose?std='+std+'&t='+Date.now();
-    N.textContent='Orange part = selected motor. Ghosts = band edges.';
+    N.textContent='Orange part = selected motor. Ghosts = band edges around the target.';
   }
   push();
 }
 function push(){
-  fetch('/select',{method:'POST',body:JSON.stringify({sel,groups,
+  fetch('/select',{method:'POST',body:JSON.stringify({sel,groups,targets,
     upright_std:DEF.upright_std,height_low:DEF.height_low,height_high:DEF.height_high})});
   render._t && clearTimeout(render._t);
   render._t=setTimeout(render,400);
 }
+const DISABLEABLE=['upright','stand_height','pose','head_pose_tracking','body_ang_vel','action_rate_l2','self_collisions','dof_pos_limits'];
+function toggle(term,el){
+  if(el.checked) disabled.delete(term); else disabled.add(term);
+  push();
+}
 function apply(){
   const val=id=>document.getElementById(id)?+document.getElementById(id).value:null;
-  fetch('/apply',{method:'POST',body:JSON.stringify({rewards:{
-      upright:{weight:val('upright_w'),std:DEF.upright_std},
-      stand_height:{weight:val('height_w'),height_low:DEF.height_low,height_high:DEF.height_high},
-      pose:{weight:val('pose_w')}}, pose_std_standing:groups})})
+  const w={};
+  const ws={upright:'upright_w',stand_height:'height_w',pose:'pose_w'};
+  for(const [t,id] of Object.entries(ws)) w[t]={weight:disabled.has(t)?0:val(id)};
+  fetch('/apply',{method:'POST',body:JSON.stringify({rewards:Object.assign(w,{
+      upright:Object.assign(w.upright||{},{std:DEF.upright_std}),
+      stand_height:Object.assign(w.stand_height||{},{height_low:DEF.height_low,height_high:DEF.height_high})}),
+      pose_std_standing:groups, pose_targets:targets, disabled:[...disabled]})})
     .then(r=>r.text()).then(t=>document.getElementById('msg').textContent=t);
 }
 select('imu');

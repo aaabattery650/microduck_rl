@@ -36,6 +36,7 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg
 from mjlab.tasks.velocity import mdp
 
 from mjlab_microduck.tasks import mdp as microduck_mdp
+from mjlab_microduck.robot import microduck_constants as C
 from mjlab_microduck.tasks.microduck_velocity_env_cfg import (
     make_microduck_velocity_env_cfg,
 )
@@ -104,6 +105,32 @@ def _apply_reward_overrides(cfg) -> None:
         if pattern not in stds:
             raise ValueError(f"stand_rewards.json: unknown pose group pattern {pattern!r}")
         stds[pattern] = std
+    # Explicit target angles (rad from HOME, keyed by joint name): swap the
+    # pose term for pose_targets_gaussian so the rewarded pose follows them.
+    targets = ov.get("pose_targets")
+    if targets:
+        import mujoco as _mj
+
+        known = {j.name for j in _mj.MjSpec.from_file(str(C.MICRODUCK_WALK_XML)).joints if j.name}
+        unknown = [k for k in targets if k not in known]
+        if unknown:
+            raise ValueError(f"stand_rewards.json: unknown joint name(s) in pose_targets: {unknown}")
+        old = cfg.rewards["pose"]
+        cfg.rewards["pose"] = RewardTermCfg(
+            func=microduck_mdp.pose_targets_gaussian,
+            weight=old.weight,
+            params={
+                "std_standing": old.params["std_standing"],
+                "targets": dict(targets),
+                "asset_cfg": old.params["asset_cfg"],
+            },
+        )
+    # Whole-term disables: weight EXACTLY 0 (allowed for penalties too — the
+    # guard only forbids POSITIVE penalty weights; zero is simply "off").
+    for name in ov.get("disabled", []):
+        if name not in cfg.rewards:
+            raise ValueError(f"stand_rewards.json: cannot disable unknown term {name!r}")
+        cfg.rewards[name].weight = 0.0
     print(f"[stand] reward overrides applied from {_REWARD_OVERRIDES.name}")
 
 

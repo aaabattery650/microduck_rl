@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 from dataclasses import dataclass as _dataclass
 
 import numpy as np
@@ -1692,6 +1693,46 @@ def hip_pitch_knee_vel_l2(
     """
     asset: Entity = env.scene[asset_cfg.name]
     return torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+
+
+def pose_targets_gaussian(
+    env: ManagerBasedRlEnv,
+    std_standing: dict[str, float],
+    targets: dict[str, float],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Per-joint Gaussian pose reward with EXPLICIT target angles.
+
+    Unlike the stock pose term (which always targets the default/HOME pose),
+    ``targets`` maps joint-name patterns to offsets in radians from default —
+    the Reward Lab's "change the target angle" feature. ``std_standing`` keeps
+    the per-group tolerance bands. Both dicts are resolved by name (first
+    fullmatch wins) and cached per env; joints matched by neither dict keep a
+    0 target and a 0.1 rad std.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    joint_ids, joint_names = asset.find_joints(asset_cfg.joint_names or (r"^(?!passive_).*",))
+    cache = env.__dict__.setdefault("_pose_targets_gaussian_cache", {})
+    key = tuple(joint_names)
+    if key not in cache:
+        stds, tgts = [], []
+        for name in joint_names:
+            std = next((v for p, v in std_standing.items() if re.fullmatch(p, name)), 0.1)
+            tgt = next((v for p, v in targets.items() if re.fullmatch(p, name)), 0.0)
+            stds.append(std)
+            tgts.append(tgt)
+        device = env.device
+        cache[key] = (
+            torch.tensor(stds, device=device).unsqueeze(0),
+            torch.tensor(tgts, device=device).unsqueeze(0),
+        )
+    stds_t, tgts_t = cache[key]
+    error = (
+        asset.data.joint_pos[:, joint_ids]
+        - asset.data.default_joint_pos[:, joint_ids]
+        - tgts_t
+    ) / stds_t
+    return torch.mean(torch.exp(-torch.square(error)), dim=1)
 
 
 def neck_joint_pos_l2(
