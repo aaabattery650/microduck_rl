@@ -44,7 +44,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 OVERRIDES = REPO_ROOT / "configs" / "stand_rewards.json"
 
 from mjlab_microduck.robot import microduck_constants as C  # noqa: E402
-from mjlab_microduck.robot.microduck.make_hd1910_model import load_stl_binary  # noqa: E402
 from mjlab_microduck.tasks.microduck_stand_env_cfg import make_microduck_stand_env_cfg  # noqa: E402
 
 CFG = make_microduck_stand_env_cfg()
@@ -93,12 +92,6 @@ PREVIEW: dict = {}
 
 
 # ═══ 3D scene ════════════════════════════════════════════════════════════════
-def _stl(path: Path):
-    tris = load_stl_binary(path)
-    v = tris.reshape(-1, 3)
-    return v, np.arange(len(v)).reshape(-1, 3).astype(np.int32)
-
-
 def _quat_mul(a, b):
     w1, x1, y1, z1 = a; w2, x2, y2, z2 = b
     return np.array([w1*w2-x1*x2-y1*y2-z1*z2, w1*x2+x1*w2+y1*z2-z1*y2,
@@ -109,11 +102,22 @@ def _axis_quat(ax, ang):
     return np.array([math.cos(ang / 2), *(math.sin(ang / 2) * np.array(ax))])
 
 
+def _mesh_buffers(model, mid: int):
+    """Compiled mesh vertices/faces — already in MuJoCo's canonical mesh
+    frame, consistent with geom_pos/geom_quat. (Raw STL files are NOT: the
+    compiler re-centers meshes via mesh_pos/mesh_quat, so placing raw
+    vertices scatters the robot.)"""
+    vadr, vnum = model.mesh_vertadr[mid], model.mesh_vertnum[mid]
+    verts = np.array(model.mesh_vert[vadr : vadr + vnum], dtype=np.float32)
+    fadr, fnum = model.mesh_faceadr[mid], model.mesh_facenum[mid]
+    faces = np.array(model.mesh_face[fadr : fadr + fnum], dtype=np.int32)
+    return verts, faces
+
+
 def init_preview(port: int):
     server = viser.ViserServer(host="0.0.0.0", port=port)
     model = mujoco.MjSpec.from_file(str(C.MICRODUCK_WALK_XML)).compile()
     data = mujoco.MjData(model)
-    assets = Path(C.MICRODUCK_WALK_XML).parent / "assets"
 
     PREVIEW.update(server=server, model=model, data=data, mesh_handles=[], gate={},
                    joint_geoms={}, base_colors={}, ghost_handles={})
@@ -126,10 +130,9 @@ def init_preview(port: int):
             bid = model.geom_bodyid[g]
             if mid < 0 or bid == 0 or model.geom_contype[g] or model.geom_conaffinity[g]:
                 continue
-            mname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mid)
-            if mname not in cache:
-                cache[mname] = _stl(assets / f"{mname}.stl")
-            v, f = cache[mname]
+            if mid not in cache:
+                cache[mid] = _mesh_buffers(model, mid)
+            v, f = cache[mid]
             h = server.scene.add_mesh_simple(f"{vid}_{g}", vertices=v, faces=f, color=color)
             if vid == "optimal":
                 PREVIEW["mesh_handles"].append((g, h))
