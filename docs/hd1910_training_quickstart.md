@@ -136,25 +136,54 @@ No GUI toolkit needed (it's a local web page), works on WSL2. Alternatively
 `wandb login` gives the full hosted dashboard, and
 `uv run play <TASK> --checkpoint-file <...>` opens the viewer directly.
 
-## 4. View the policy
+## 4. View the trained policy
+
+**On the WSL2 PC (proven combo — browser viewer + CPU, no VRAM/OpenGL issues):**
 
 ```bash
-# Faithful viewer (exact training physics: HD-1910 actuator + DR). Interactive 3D.
-uv run play Mjlab-Velocity-Flat-MicroDuck --checkpoint-file logs/rsl_rl/velocity/<ts>/model_4000.pt
-uv run play Mjlab-Velocity-Flat-MicroDuck --wandb-run-path <entity>/mjlab_microduck/<run_id>   # from wandb
-# Options: --num-envs 4 (slow machines), --no-terminations (watch falls), --video.
+# newest checkpoint of the run you want to watch (stand / velocity):
+LATEST=$(ls -t logs/rsl_rl/stand/*/model_*.pt | head -1)     # or .../velocity/...
+echo "$LATEST"
 
-# Headless video clip (no display needed):
-uv run scripts/render_policy.py output.onnx --seconds 10 --video media/walk.mp4
+uv run play Mjlab-Stand-Flat-MicroDuck --checkpoint-file "$LATEST" \
+    --num-envs 1 --viewer viser --device cpu
 ```
 
-The `play` command auto-falls back to CPU — you can copy a `model_XXXX.pt` to
-the Mac and view it there the same way.
+Wait ~1 min for it to load, then open the printed URL (e.g.
+`http://localhost:8080`) in the Windows browser. Drag = orbit, scroll = zoom,
+`Ctrl+C` in the terminal closes it. Add `--num-envs 4` to watch four robots
+at once, `--no-terminations` to inspect falls without auto-reset.
+
+> **On WSL2, always add `--viewer viser`** — the native MuJoCo window renders
+> through WSL's software OpenGL (~4 fps); viser renders in the browser at
+> full speed. Use the native window on the Mac/Linux desktop instead.
+
+**From a wandb run** (any machine with the run accessible):
+
+```bash
+uv run play Mjlab-Stand-Flat-MicroDuck --wandb-run-path <entity>/mjlab_microduck/<run_id>
+```
+
+**On the Mac** (CPU works fine): copy a `model_XXXX.pt` over, then the same
+command with `--checkpoint-file`.
+
+**What a successful stand policy looks like:** starts standing (from a random
+tilt) and stays up; staggers and recovers from the periodic pushes; moves its
+head on command without falling. Face-planting, growing oscillation, or a
+persistent crouch = not converged yet — train longer or check the dashboard
+graphs.
+
+**Headless video clip instead** (no viewer, needs the exported ONNX):
+
+```bash
+uv run scripts/render_policy.py output.onnx --seconds 10 --video media/stand.mp4
+```
 
 ## 5. Export for deployment
 
 ```bash
-uv run scripts/export.py Mjlab-Velocity-Flat-MicroDuck --wandb-run-path <entity>/mjlab_microduck/<run_id>
+LATEST=$(ls -t logs/rsl_rl/stand/*/model_*.pt | head -1)     # or .../velocity/...
+uv run scripts/export.py Mjlab-Stand-Flat-MicroDuck --checkpoint-file "$LATEST"
 # → output.onnx  ([1,61] → [1,14], obs normalizer baked in — the only safe export path)
 
 # Runtime rehearsal on CPU (keyboard-driven; use --no-bam for non-XL330 physics):
