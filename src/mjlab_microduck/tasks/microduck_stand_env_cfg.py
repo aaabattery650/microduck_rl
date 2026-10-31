@@ -24,8 +24,10 @@ contract is untouched — the exported ONNX drops into the runtime's `stand`
 slot. ~500-1500 iterations at 4096 envs.
 """
 
+import json
 import math
 from copy import deepcopy
+from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers import CurriculumTermCfg, EventTermCfg, RewardTermCfg
@@ -61,6 +63,48 @@ GAIT_REWARDS = (
     "foot_slip",
     "angular_momentum",
 )
+
+# Penalty terms whose weight must stay NEGATIVE (self-negating style, see
+# AGENTS.md sign convention): a positive weight double-negates into a reward
+# for the violation and the policy farms it.
+_NEGATIVE_WEIGHT_TERMS = frozenset(
+    {"body_ang_vel", "action_rate_l2", "self_collisions", "dof_pos_limits"}
+)
+
+# Optional reward overrides written by scripts/reward_lab.py (browser UI).
+_REWARD_OVERRIDES = Path(__file__).resolve().parents[3] / "configs" / "stand_rewards.json"
+
+
+def _apply_reward_overrides(cfg) -> None:
+    """Apply configs/stand_rewards.json if present: {rewards: {term: {param:
+    value}}, pose_std_standing: {pattern: std}}. Refuses positive weights on
+    penalty terms (sign-convention footgun) — fail loud at cfg build, not
+    500 iterations into a farmed run."""
+    if not _REWARD_OVERRIDES.exists():
+        return
+    ov = json.loads(_REWARD_OVERRIDES.read_text())
+    for name, params in ov.get("rewards", {}).items():
+        if name not in cfg.rewards:
+            raise ValueError(f"stand_rewards.json: unknown reward term {name!r}")
+        term = cfg.rewards[name]
+        for key, value in params.items():
+            if key == "weight":
+                if name in _NEGATIVE_WEIGHT_TERMS and value > 0:
+                    raise ValueError(
+                        f"stand_rewards.json: {name}.weight must stay negative "
+                        f"(got {value}) — a positive penalty is a reward for the violation."
+                    )
+                term.weight = value
+            else:
+                if key not in term.params:
+                    raise ValueError(f"stand_rewards.json: unknown param {name}.{key}")
+                term.params[key] = value
+    for pattern, std in ov.get("pose_std_standing", {}).items():
+        stds = cfg.rewards["pose"].params["std_standing"]
+        if pattern not in stds:
+            raise ValueError(f"stand_rewards.json: unknown pose group pattern {pattern!r}")
+        stds[pattern] = std
+    print(f"[stand] reward overrides applied from {_REWARD_OVERRIDES.name}")
 
 
 def make_microduck_stand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -133,6 +177,8 @@ def make_microduck_stand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # standing_envs is a no-op here (commands are ~zero already) and is dropped
     # to keep the wandb panel honest.
     cfg.curriculum.pop("standing_envs", None)
+
+    _apply_reward_overrides(cfg)
 
     return cfg
 
