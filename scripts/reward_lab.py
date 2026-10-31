@@ -167,6 +167,135 @@ def joint_chart(stds: dict[str, float]) -> bytes:
     buf = io.BytesIO(); fig.savefig(buf, format="png"); return buf.getvalue()
 
 
+# ── 3D duck preview (viser): optimal pose + band ghosts + height gate ────────
+import threading  # noqa: E402
+
+import viser  # noqa: E402
+
+from mjlab_microduck.robot.microduck_constants import get_walk_spec  # noqa: E402
+from mjlab_microduck.robot.microduck.make_hd1910_model import load_stl_binary  # noqa: E402
+
+_PREVIEW: dict = {}
+
+
+def _stl(path: Path):
+    tris = load_stl_binary(path)
+    verts = tris.reshape(-1, 3)
+    faces = np.arange(len(verts)).reshape(-1, 3)
+    return verts, faces
+
+
+def _quat_mul(a, b):
+    w1, x1, y1, z1 = a; w2, x2, y2, z2 = b
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ])
+
+
+def _init_preview(port: int):
+    server = viser.ViserServer(host="0.0.0.0", port=port)
+    model = get_walk_spec().compile()
+    data = mujoco.MjData(model)
+
+    # HOME qpos: free joint at settled height/level + joints at HOME angles.
+    qpos = np.zeros(model.nq)
+    home = {n: v for n, v in _home_pairs()}
+    for name in JOINTS:
+        adr = model.jnt_qposadr[model.joint(name).id]
+        qpos[adr] = home.get(name, 0.0)
+    qpos[2] = SETTLED_Z
+    data.qpos[:] = qpos
+    mujoco.mj_forward(model, data)
+
+    # Visual geoms (mesh-carrying, non-collision) → viser meshes, 3 variants.
+    robot_dir = Path(microduck_xml())
+    variants = {"optimal": (0.25, 0.8, 1.0), "ghost_lo": (1.0, 0.55, 0.55), "ghost_hi": (0.55, 1.0, 0.55)}
+    _PREVIEW["server"] = server
+    _PREVIEW["model"] = model
+    _PREVIEW["data"] = data
+    _PREVIEW["handles"] = {k: [] for k in variants}
+    _PREVIEW["mesh_cache"] = {}
+
+    for vid, color in variants.items():
+        for g in range(model.ngeom):
+            mid = model.geom_dataid[g]
+            if mid < 0 or model.geom_bodyid[g] == 0:
+                continue
+            if model.geom_contype[g] or model.geom_conaffinity[g]:
+                continue  # collision geoms → skip (visual only)
+            mesh_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mid)
+            if mesh_name not in _PREVIEW["mesh_cache"]:
+                _PREVIEW["mesh_cache"][mesh_name] = _stl(robot_dir / "assets" / f"{mesh_name}.stl")
+            verts, faces = _PREVIEW["mesh_cache"][mesh_name]
+            h = server.scene.add_mesh_simple(f"{vid}_{g}", vertices=verts, faces=faces, color=color)
+            _PREVIEW["handles"][vid].append((g, h))
+
+    # Height-gate discs (updated on slider change).
+    theta = np.linspace(0, 2 * np.pi, 40)
+    ring = np.stack([0.09 * np.cos(theta), 0.09 * np.sin(theta), np.zeros(40)], axis=1)
+    disc_v = np.concatenate([np.zeros((1, 3)), ring])
+    disc_f = np.array([[0, i + 1, i + 2] for i in range(39)], dtype=np.int32)
+    _PREVIEW["gate"] = {
+        "gate_low": server.scene.add_mesh_simple("gate_low", vertices=disc_v, faces=disc_f, color=(1.0, 0.6, 0.2)),
+        "gate_high": server.scene.add_mesh_simple("gate_high", vertices=disc_v, faces=disc_f, color=(0.2, 0.9, 0.3)),
+    }
+    _update_preview({"height_low": 0.08, "height_high": 0.114})
+
+
+def microduck_xml() -> str:
+    from mjlab_microduck.robot import microduck_constants as C
+    return str(C.MICRODUCK_WALK_XML.parent)
+
+
+def _home_pairs():
+    for pat, val in HOME_FRAME.joint_pos.items():
+        for name in JOINTS:
+            if re.fullmatch(pat, name):
+                yield name, val
+
+
+def _pose_for_offsets(leg_offsets) -> np.ndarray:
+    model, data = _PREVIEW["model"], _PREVIEW["data"]
+    qpos = np.zeros(model.nq)
+    for name, (lo, hi, home, grp) in JOINTS.items():
+        adr = model.jnt_qposadr[model.joint(name).id]
+        qpos[adr] = home + (leg_offsets.get(grp, 0.0) if grp else 0.0)
+    qpos[2] = SETTLED_Z
+    return qpos
+
+
+def _apply_pose(variant: str, qpos: np.ndarray):
+    model, data = _PREVIEW["model"], _PREVIEW["data"]
+    data.qpos[:] = qpos
+    mujoco.mj_forward(model, data)
+    for g, h in _PREVIEW["handles"][variant]:
+        bid = model.geom_bodyid[g]
+        bw, gw = data.xquat[bid], model.geom_quat[g]
+        w = _quat_mul([bw[0], bw[1], bw[2], bw[3]], [gw[0], gw[1], gw[2], gw[3]])
+        p = data.xpos[bid] + data.xmat[bid].reshape(3, 3) @ model.geom_pos[g]
+        h.position = tuple(p)
+        h.wxyz = tuple(w)
+
+
+def _update_preview(params: dict):
+    if not _PREVIEW:
+        return
+    stds = params.get("pose_std_standing", {})
+    lo = params.get("height_low", 0.08)
+    hi = params.get("height_high", 0.114)
+    _apply_pose("optimal", _pose_for_offsets({}))
+    ghost_lo, ghost_hi = {}, {}
+    for grp, std in stds.items():
+        ghost_lo[grp], ghost_hi[grp] = -float(std), float(std)
+    _apply_pose("ghost_lo", _pose_for_offsets(ghost_lo))
+    _apply_pose("ghost_hi", _pose_for_offsets(ghost_hi))
+    for name, z in (("gate_low", lo), ("gate_high", hi)):
+        _PREVIEW["gate"][name].position = (0.0, 0.0, z)
+
+
 def _f(q, k, d):
     try:
         return float(q.get(k, [d])[0])
@@ -204,7 +333,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(PAGE.encode(), "text/html")
 
     def do_POST(self):
-        if self.path == "/apply":
+        if self.path == "/preview":
+            n = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(n) or b"{}")
+            _update_preview(payload)
+            up_w = payload.get("rewards", {}).get("upright", {}).get("weight", 2.0)
+            sh_w = payload.get("rewards", {}).get("stand_height", {}).get("weight", 1.5)
+            self._send(
+                f"3D updated. Reward ceiling at the shown pose: upright {up_w:.2f} + "
+                f"stand_height {sh_w:.2f} (+pose/head terms at their weights, penalties 0).".encode(),
+                "text/plain",
+            )
+        elif self.path == "/apply":
             n = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(n) or b"{}")
             errors = []
@@ -263,6 +403,12 @@ __SLIDERS__
 </div>
 <h3>Reward shapes</h3>
 <img id="curve_tilt" width="540"> <img id="curve_height" width="540">
+<h3>3D preview — <a href="http://localhost:__VISER_PORT__" target="_blank">open the duck</a></h3>
+<div class="sub">Blue duck = reward-optimal pose (level trunk, settled height, joints at HOME).
+Red/green ghosts = your pose-band edges (all leg groups ±std). Orange disc = height_low
+(no reward below), green disc = height_high (full reward above). They move as you drag.
+Open the 3D link once, keep it in a second tab/window.</div>
+<div id="preview_msg" class="sub"></div>
 <br><button onclick="apply()">Apply overrides</button><span id="msg"></span>
 <script>
 const groups = __GROUP_JSON__;
@@ -285,6 +431,14 @@ function refresh(){
     if(el) { groups[k]=+el.value; jq.push(k.replace(/\\.\\*/g,'')+'='+el.value); }
   }
   document.getElementById('joints').src='/joints?'+jq.join('&')+'&t='+Date.now();
+  // live 3D preview update
+  fetch('/preview',{method:'POST',body:JSON.stringify({
+    pose_std_standing:groups,
+    height_low:+(g('stand_height','height_low')||0.08),
+    height_high:+(g('stand_height','height_high')||0.114),
+    rewards:{upright:{weight:+(g('upright','weight')||2)},
+             stand_height:{weight:+(g('stand_height','weight')||1.5)}}
+  })}).then(r=>r.text()).then(t=>document.getElementById('preview_msg').textContent=t);
 }
 function apply(){
   const out={rewards:{},pose_std_standing:{}};
@@ -340,11 +494,13 @@ def build_page() -> str:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", type=int, default=8766)
+    p.add_argument("--viser-port", type=int, default=8767)
     p.add_argument("--no-browser", action="store_true")
     args = p.parse_args()
 
     global PAGE
-    PAGE = build_page()
+    PAGE = build_page().replace("__VISER_PORT__", str(args.viser_port))
+    _init_preview(args.viser_port)
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
     url = f"http://localhost:{args.port}"
     if OVERRIDES.exists():
