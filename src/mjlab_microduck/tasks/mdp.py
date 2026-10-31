@@ -4865,6 +4865,27 @@ def face_down_prob_curriculum(
 class VelocityCommandCommandOnly(UniformVelocityCommand):
     """Like UniformVelocityCommand but only draws the command arrows (no actual velocity arrows)."""
 
+    def create_gui(self, name, server, get_env_idx, on_change=None, request_action=None):
+        # mjlab's viser GUI builds a "Max <axis>" slider with min=0.1 and
+        # initial_value=ranges.<axis>[1]. Near-zero-command tasks (stand,
+        # standup-style: ranges like ±0.01/±0.05) trip the viser assert
+        # `max >= value >= min` and crash the viewer at startup. Floor the
+        # GUI-facing maxima for the duration of GUI creation only — the
+        # command's SAMPLING ranges are restored untouched afterwards (the
+        # sliders snapshot their initial values at creation).
+        ranges = self.cfg.ranges
+        saved = {}
+        for ax in ("lin_vel_x", "lin_vel_y", "ang_vel_z"):
+            cur = getattr(ranges, ax)
+            saved[ax] = cur
+            floor = max(0.1, abs(cur[1]), abs(cur[0]))
+            setattr(ranges, ax, (-floor, floor))
+        try:
+            return super().create_gui(name, server, get_env_idx, on_change, request_action)
+        finally:
+            for ax, cur in saved.items():
+                setattr(ranges, ax, cur)
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
         # Turn-in-place practice: for a fraction of envs, zero the linear velocity
